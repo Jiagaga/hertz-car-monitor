@@ -34,32 +34,79 @@ async function bark(title, body) {
   if (!response.ok) throw new Error(`Bark HTTP ${response.status}`);
 }
 
+async function visibleLocator(page, selector) {
+  try {
+    const loc = page.locator(selector).first();
+    if (await loc.count() > 0 && await loc.isVisible({ timeout: 1500 })) return loc;
+  } catch {}
+  return null;
+}
+
 async function fillFirst(page, selectors, value, label) {
   for (const selector of selectors) {
-    try {
-      const loc = page.locator(selector).first();
-      if (await loc.count() > 0 && await loc.isVisible({ timeout: 1000 })) {
-        await loc.fill(value);
-        console.log(`Filled ${label} using ${selector}`);
-        return loc;
-      }
-    } catch {}
+    const loc = await visibleLocator(page, selector);
+    if (loc) {
+      await loc.fill(value);
+      console.log(`Filled ${label} using ${selector}`);
+      return loc;
+    }
   }
   throw new Error(`Could not find ${label} field on Hertz page`);
 }
 
+async function fillByRole(page, nameRegex, value, label) {
+  try {
+    const loc = page.getByRole('textbox', { name: nameRegex }).first();
+    if (await loc.count() > 0 && await loc.isVisible({ timeout: 3000 })) {
+      await loc.fill(value);
+      console.log(`Filled ${label} using accessible textbox ${nameRegex}`);
+      return loc;
+    }
+  } catch (e) {
+    console.log(`Accessible textbox lookup failed for ${label}: ${e.message}`);
+  }
+  return null;
+}
+
 async function selectFirst(page, selectors, label, value, formatted) {
   for (const selector of selectors) {
-    try {
-      const loc = page.locator(selector).first();
-      if (await loc.count() > 0 && await loc.isVisible({ timeout: 1000 })) {
-        try { await loc.selectOption({ label: formatted }); } catch { await loc.selectOption(value); }
-        console.log(`Selected ${label} using ${selector}`);
-        return loc;
-      }
-    } catch {}
+    const loc = await visibleLocator(page, selector);
+    if (loc) {
+      try { await loc.selectOption({ label: formatted }); } catch { await loc.selectOption(value); }
+      console.log(`Selected ${label} using ${selector}`);
+      return loc;
+    }
   }
   throw new Error(`Could not find ${label} field on Hertz page`);
+}
+
+async function dumpFormDiagnostics(page) {
+  console.log('--- HERTZ FORM DIAGNOSTICS ---');
+  const fields = await page.locator('input, select, textarea, button').evaluateAll(els => els.map((el, i) => ({
+    i,
+    tag: el.tagName,
+    type: el.getAttribute('type'),
+    name: el.getAttribute('name'),
+    id: el.id,
+    placeholder: el.getAttribute('placeholder'),
+    aria: el.getAttribute('aria-label'),
+    role: el.getAttribute('role'),
+    value: el.value,
+    text: (el.innerText || '').trim().slice(0, 120),
+    visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+  })).slice(0, 120));
+  for (const f of fields) console.log(JSON.stringify(f));
+  console.log('--- ACCESSIBLE TEXTBOXES ---');
+  try {
+    const textboxes = await page.getByRole('textbox').evaluateAll(els => els.map((el, i) => ({
+      i, aria: el.getAttribute('aria-label'), name: el.getAttribute('name'), id: el.id,
+      placeholder: el.getAttribute('placeholder'), value: el.value,
+      visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+    })));
+    for (const t of textboxes) console.log(JSON.stringify(t));
+  } catch (e) { console.log(`Textbox diagnostics failed: ${e.message}`); }
+  console.log('--- BODY SAMPLE ---');
+  console.log(normalise(await page.locator('body').innerText().catch(() => '')).slice(0, 2500));
 }
 
 async function main() {
@@ -90,35 +137,81 @@ async function main() {
       try { const button = page.locator(selector).first(); if (await button.isVisible({ timeout: 1000 })) { await button.click(); break; } } catch {}
     }
 
-    await fillFirst(page, [
-      'input[aria-label*="Pick-Up & Drop-Off Location" i]',
-      'input[placeholder*="Pick-Up & Drop-Off" i]',
-      'input[placeholder*="Pick-up" i]',
-      'input[name="pickupLocationCode"]',
-      'input[id*="pickupLocationCode" i]',
-      'input[type="text"]'
-    ], CONFIG.pickupLocation, 'pick-up location');
+    // Current Hertz pages expose the location box through the accessible name
+    // "Pick-Up & Drop-Off Location". Keep older CSS selectors as fallbacks.
+    let pickup = await fillByRole(page, /Pick-Up\s*&\s*Drop-Off Location/i, CONFIG.pickupLocation, 'pick-up location');
+    if (!pickup) {
+      pickup = await fillFirst(page, [
+        'input[aria-label*="Pick-Up & Drop-Off Location" i]',
+        'input[placeholder*="Pick-Up & Drop-Off" i]',
+        'input[placeholder*="Pick-up" i]',
+        'input[name="pickupLocationCode"]',
+        'input[id*="pickupLocationCode" i]'
+      ], CONFIG.pickupLocation, 'pick-up location');
+    }
 
-    await page.waitForTimeout(1500);
-    const suggestions = page.locator('[role="option"], .location-suggestion, .autocomplete-suggestion, [class*="suggestion"]');
-    for (let i = 0; i < Math.min(await suggestions.count(), 30); i++) {
+    await page.waitForTimeout(1200);
+
+    // Select the El Calafate Airport suggestion. If the current UI uses a
+    // combobox/listbox, use that first; then fall back to common suggestion classes.
+    let suggestionClicked = false;
+    for (const selector of ['[role="option"]', '[role="listbox"] [role="option"]', '.location-suggestion', '.autocomplete-suggestion', '[class*="suggestion"]']) {
+      const suggestions = page.locator(selector);
+      for (let i = 0; i < Math.min(await suggestions.count(), 40); i++) {
+        try {
+          const s = suggestions.nth(i);
+          const text = normalise(await s.innerText());
+          if (/el calafate|FTE|airport/i.test(text) && await s.isVisible()) {
+            await s.click();
+            console.log(`Selected location suggestion: ${text}`);
+            suggestionClicked = true;
+            break;
+          }
+        } catch {}
+      }
+      if (suggestionClicked) break;
+    }
+
+    if (!suggestionClicked) {
+      // Keyboard fallback for autocomplete widgets.
       try {
-        const s = suggestions.nth(i);
-        const text = normalise(await s.innerText());
-        if (/el calafate|FTE|airport/i.test(text) && await s.isVisible()) { await s.click(); console.log(`Selected location suggestion: ${text}`); break; }
+        await pickup.press('ArrowDown');
+        await pickup.press('Enter');
+        console.log('Selected location using keyboard autocomplete fallback.');
       } catch {}
     }
 
-    await fillFirst(page, ['input[name="pickUpDate"]', 'input[id*="pickUpDate" i]', 'input[placeholder*="MM/DD" i]'], formatDate(CONFIG.pickupDate), 'pick-up date');
+    // Same-location return is the default on current Hertz pages. Only use a
+    // separate drop-off field if the page exposes one.
+    await fillFirst(page, [
+      'input[name="pickUpDate"]',
+      'input[id*="pickUpDate" i]',
+      'input[placeholder*="MM/DD" i]'
+    ], formatDate(CONFIG.pickupDate), 'pick-up date');
+
     await selectFirst(page, ['select[name="pickUpTime"]', 'select[id*="pickUpTime" i]'], 'pick-up time', CONFIG.pickupTime, formatTime(CONFIG.pickupTime));
-    await fillFirst(page, ['input[name="returnDate"]', 'input[id*="returnDate" i]'], formatDate(CONFIG.dropoffDate), 'drop-off date');
+
+    await fillFirst(page, [
+      'input[name="returnDate"]',
+      'input[id*="returnDate" i]',
+      'input[placeholder*="MM/DD" i]'
+    ], formatDate(CONFIG.dropoffDate), 'drop-off date');
+
     await selectFirst(page, ['select[name="returnTime"]', 'select[id*="returnTime" i]'], 'drop-off time', CONFIG.dropoffTime, formatTime(CONFIG.dropoffTime));
 
     const buttons = page.getByRole('button');
     let clicked = false;
     for (let i = 0; i < await buttons.count(); i++) {
       const b = buttons.nth(i);
-      try { const text = normalise(await b.innerText()); if (/^(search|view vehicles|continue)$/i.test(text) && await b.isVisible()) { await b.click(); console.log(`Clicked search button: ${text}`); clicked = true; break; } } catch {}
+      try {
+        const text = normalise(await b.innerText());
+        if (/^(search|view vehicles|continue)$/i.test(text) && await b.isVisible()) {
+          await b.click();
+          console.log(`Clicked search button: ${text}`);
+          clicked = true;
+          break;
+        }
+      } catch {}
     }
     if (!clicked) await page.locator('button[type="submit"], input[type="submit"]').first().click();
 
@@ -169,9 +262,20 @@ async function main() {
       console.log('Bark notification sent.');
     }
     saveState(current);
+  } catch (error) {
+    // On selector failures, print the live form structure and save a screenshot.
+    // This makes the next fix evidence-based rather than guessing selectors.
+    console.error(error?.stack || error);
+    try {
+      await dumpFormDiagnostics(page);
+      await page.screenshot({ path: 'hertz-debug.png', fullPage: true });
+    } catch (diagnosticError) {
+      console.error(`Diagnostics also failed: ${diagnosticError?.stack || diagnosticError}`);
+    }
+    process.exitCode = 1;
   } finally {
     await browser.close();
   }
 }
 
-main().catch(error => { console.error(error?.stack || error); process.exit(1); });
+main();

@@ -1,0 +1,51 @@
+name: Hertz Inventory Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 15 minutes (UTC). GitHub may delay scheduled runs by a few minutes.
+    - cron: '*/15 * * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out monitor
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Restore previous inventory state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: hertz-state-${{ github.run_id }}
+          restore-keys: |
+            hertz-state-
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Check Hertz inventory
+        env:
+          BARK_KEY: ${{ secrets.BARK_KEY }}
+        run: npm run check
+
+      - name: Save current inventory state
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state.json
+          key: hertz-state-${{ github.run_id }}

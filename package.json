@@ -1,0 +1,12 @@
+{
+  "name": "hertz-car-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monitor Hertz El Calafate Airport inventory and notify via Bark",
+  "scripts": {
+    "check": "node monitor.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0"
+  }
+}

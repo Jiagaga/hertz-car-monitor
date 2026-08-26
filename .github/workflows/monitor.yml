@@ -48,3 +48,14 @@ jobs:
         with:
           path: state.json
           key: hertz-state-${{ github.run_id }}
+
+      - name: Upload Hertz debug evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hertz-debug-${{ github.run_id }}
+          path: |
+            hertz-debug.png
+            state.json
+          if-no-files-found: ignore
+          retention-days: 3

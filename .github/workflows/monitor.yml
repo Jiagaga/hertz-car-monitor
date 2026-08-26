@@ -2,6 +2,9 @@ name: Hertz Inventory Monitor
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
   schedule:
     # Every 15 minutes (UTC). GitHub may delay scheduled runs by a few minutes.
     - cron: '*/15 * * * *'

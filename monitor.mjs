@@ -82,6 +82,7 @@ async function selectFirst(page, selectors, label, value, formatted) {
 
 async function dumpFormDiagnostics(page) {
   console.log('--- HERTZ FORM DIAGNOSTICS ---');
+  console.log(`Diagnostic URL: ${page.url()}`);
   const fields = await page.locator('input, select, textarea, button').evaluateAll(els => els.map((el, i) => ({
     i,
     tag: el.tagName,
@@ -119,6 +120,7 @@ async function main() {
   console.log(`Previously known vehicles: ${state.vehicles?.length ?? 0}`);
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'] });
+  let page = null;
 
   try {
     const context = await browser.newContext({
@@ -126,7 +128,7 @@ async function main() {
       viewport: { width: 1280, height: 900 },
       locale: 'en-US',
     });
-    const page = await context.newPage();
+    page = await context.newPage();
     page.setDefaultTimeout(30000);
 
     await page.goto(CONFIG.bookingUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -137,23 +139,25 @@ async function main() {
       try { const button = page.locator(selector).first(); if (await button.isVisible({ timeout: 1000 })) { await button.click(); break; } } catch {}
     }
 
-    // Current Hertz pages expose the location box through the accessible name
-    // "Pick-Up & Drop-Off Location". Keep older CSS selectors as fallbacks.
+    // Hertz currently exposes this as an accessible textbox, but the exact
+    // label/placeholder varies between the location page and the home page.
     let pickup = await fillByRole(page, /Pick-Up\s*&\s*Drop-Off Location/i, CONFIG.pickupLocation, 'pick-up location');
+    if (!pickup) pickup = await fillByRole(page, /Select your location/i, CONFIG.pickupLocation, 'pick-up location');
     if (!pickup) {
       pickup = await fillFirst(page, [
         'input[aria-label*="Pick-Up & Drop-Off Location" i]',
+        'input[aria-label*="Select your location" i]',
+        'input[aria-label*="location" i]',
         'input[placeholder*="Pick-Up & Drop-Off" i]',
         'input[placeholder*="Pick-up" i]',
+        'input[placeholder*="location" i]',
         'input[name="pickupLocationCode"]',
         'input[id*="pickupLocationCode" i]'
       ], CONFIG.pickupLocation, 'pick-up location');
     }
 
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(1500);
 
-    // Select the El Calafate Airport suggestion. If the current UI uses a
-    // combobox/listbox, use that first; then fall back to common suggestion classes.
     let suggestionClicked = false;
     for (const selector of ['[role="option"]', '[role="listbox"] [role="option"]', '.location-suggestion', '.autocomplete-suggestion', '[class*="suggestion"]']) {
       const suggestions = page.locator(selector);
@@ -173,7 +177,6 @@ async function main() {
     }
 
     if (!suggestionClicked) {
-      // Keyboard fallback for autocomplete widgets.
       try {
         await pickup.press('ArrowDown');
         await pickup.press('Enter');
@@ -181,8 +184,6 @@ async function main() {
       } catch {}
     }
 
-    // Same-location return is the default on current Hertz pages. Only use a
-    // separate drop-off field if the page exposes one.
     await fillFirst(page, [
       'input[name="pickUpDate"]',
       'input[id*="pickUpDate" i]',
@@ -263,14 +264,16 @@ async function main() {
     }
     saveState(current);
   } catch (error) {
-    // On selector failures, print the live form structure and save a screenshot.
-    // This makes the next fix evidence-based rather than guessing selectors.
     console.error(error?.stack || error);
-    try {
-      await dumpFormDiagnostics(page);
-      await page.screenshot({ path: 'hertz-debug.png', fullPage: true });
-    } catch (diagnosticError) {
-      console.error(`Diagnostics also failed: ${diagnosticError?.stack || diagnosticError}`);
+    if (page) {
+      try {
+        await dumpFormDiagnostics(page);
+        await page.screenshot({ path: 'hertz-debug.png', fullPage: true });
+      } catch (diagnosticError) {
+        console.error(`Diagnostics also failed: ${diagnosticError?.stack || diagnosticError}`);
+      }
+    } else {
+      console.error('Diagnostics unavailable because the browser page was never created.');
     }
     process.exitCode = 1;
   } finally {

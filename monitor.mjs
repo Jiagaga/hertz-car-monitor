@@ -11,16 +11,23 @@ const CONFIG = {
 const BARK_KEY = process.env.BARK_KEY;
 const norm = s => (s || '').replace(/\s+/g, ' ').trim();
 const fmtDate = iso => { const [y,m,d] = iso.split('-'); return `${m}/${d}/${y}`; };
-const fmtTime = t => { const [h,m] = t.split(':').map(Number); return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`; };
 function loadState(){try{return JSON.parse(fs.readFileSync(CONFIG.stateFile,'utf8'));}catch{return {initialized:false,vehicles:[]};}}
 function saveState(vehicles){fs.writeFileSync(CONFIG.stateFile,JSON.stringify({initialized:true,checked_at:new Date().toISOString(),vehicles},null,2));}
 async function bark(title,body){if(!BARK_KEY)throw new Error('BARK_KEY GitHub secret is missing');const r=await fetch(`https://api.day.app/${encodeURIComponent(BARK_KEY)}/${encodeURIComponent(title)}/${encodeURIComponent(body)}?group=hertz-car-monitor&sound=alarm&level=timeSensitive`);if(!r.ok)throw new Error(`Bark HTTP ${r.status}`);}
 
-async function choosePlace(page, index){
+async function choosePlace(page, targetIndex){
   const selects=page.getByText('Select place',{exact:true});
   const count=await selects.count();
   console.log(`Select place controls found: ${count}`);
-  const button=selects.nth(Math.min(index,count-1));
+  const visible=[];
+  for(let i=0;i<count;i++){
+    const el=selects.nth(i);
+    try{if(await el.isVisible()) visible.push(el);}catch{}
+  }
+  console.log(`Visible Select place controls: ${visible.length}`);
+  if(!visible.length) throw new Error('No visible Hertz location controls found');
+  const button=visible[Math.min(targetIndex,visible.length-1)];
+  await button.scrollIntoViewIfNeeded();
   await button.click();
   await page.waitForTimeout(1000);
   const candidates=page.getByText(/El Calafate\s*-\s*Airport|El Calafate Airport/i);
@@ -34,7 +41,7 @@ async function fillInput(page, locator, value, label){await locator.waitFor({sta
 
 async function diagnostics(page){
   console.log('--- HERTZ ARGENTINA DIAGNOSTICS ---'); console.log(`URL: ${page.url()}`);
-  const fields=await page.locator('input,select,button,[role="combobox"],[role="textbox"]').evaluateAll(es=>es.slice(0,180).map((e,i)=>({i,tag:e.tagName,type:e.type||'',name:e.name||'',id:e.id||'',aria:e.getAttribute('aria-label')||'',placeholder:e.getAttribute('placeholder')||'',text:norm(e.innerText||'').slice(0,120),value:e.value||'',visible:!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length)})));
+  const fields=await page.locator('input,select,button,[role="combobox"],[role="textbox"]').evaluateAll(es=>es.slice(0,180).map((e,i)=>({i,tag:e.tagName,type:e.type||'',name:e.name||'',id:e.id||'',aria:e.getAttribute('aria-label')||'',placeholder:e.getAttribute('placeholder')||'',text:(e.innerText||'').replace(/\s+/g,' ').trim().slice(0,120),value:e.value||'',visible:!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length)})));
   for(const f of fields)console.log(JSON.stringify(f));
   console.log(`BODY: ${norm(await page.locator('body').innerText().catch(()=>'' )).slice(0,3500)}`);
 }
@@ -47,7 +54,7 @@ async function main(){
   const context=await browser.newContext({userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',viewport:{width:1280,height:1000},locale:'en-US'});
   page=await context.newPage();page.setDefaultTimeout(30000);
   await page.goto(CONFIG.bookingUrl,{waitUntil:'domcontentloaded',timeout:30000});await page.waitForTimeout(5000);console.log(`Loaded URL: ${page.url()}`);
-  await choosePlace(page,2);
+  await choosePlace(page,0);
 
   const inputs=page.locator('input:visible');
   console.log(`Visible inputs: ${await inputs.count()}`);

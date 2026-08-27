@@ -31,6 +31,20 @@ jobs:
         run: npm install
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
+      - name: Harden Hertz search click
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const p = 'monitor.mjs';
+          let s = fs.readFileSync(p, 'utf8');
+          const old = "const search=page.getByRole('button',{name:'Search',exact:true});await search.click();console.log('Clicked Search');";
+          const neu = `const searchCandidates=page.locator('button:visible, [role="button"]:visible, input[type="submit"]:visible, input[type="button"]:visible');\nlet searchClicked=false;\nfor(let i=0;i<await searchCandidates.count();i++){const el=searchCandidates.nth(i);const txt=clean((await el.innerText().catch(()=>''))+' '+(await el.getAttribute('value').catch(()=>''))+' '+(await el.getAttribute('aria-label').catch(()=>'')));if(/^Search$/i.test(txt)){await el.click();searchClicked=true;break}}\nif(!searchClicked)throw Error('Could not find visible Search control');\nconsole.log('Clicked Search');`;
+          if (!s.includes(old)) throw new Error('Expected Search line not found');
+          s = s.replace(old, neu);
+          fs.writeFileSync(p, s);
+          console.log('Applied robust Search-control patch');
+          NODE
       - name: Check Hertz inventory
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}

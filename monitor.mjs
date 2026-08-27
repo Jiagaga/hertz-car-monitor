@@ -1,57 +1,36 @@
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 
-const CONFIG={bookingUrl:'https://www.hertz.com.ar/en',pickupLocation:'El Calafate - Airport',pickupDate:'2026-09-27',pickupTime:'17:00',dropoffDate:'2026-10-04',dropoffTime:'17:00',stateFile:'state.json'};
-const BARK_KEY=process.env.BARK_KEY;
-const norm=s=>(s||'').replace(/\s+/g,' ').trim();
-const fmtDate=iso=>{const[y,m,d]=iso.split('-');return `${m}/${d}/${y}`;};
-function loadState(){try{return JSON.parse(fs.readFileSync(CONFIG.stateFile,'utf8'));}catch{return{initialized:false,vehicles:[]};}}
-function saveState(v){fs.writeFileSync(CONFIG.stateFile,JSON.stringify({initialized:true,checked_at:new Date().toISOString(),vehicles:v},null,2));}
-async function bark(title,body){if(!BARK_KEY)throw new Error('BARK_KEY GitHub secret is missing');const r=await fetch(`https://api.day.app/${encodeURIComponent(BARK_KEY)}/${encodeURIComponent(title)}/${encodeURIComponent(body)}?group=hertz-car-monitor&sound=alarm&level=timeSensitive`);if(!r.ok)throw new Error(`Bark HTTP ${r.status}`);}
-
-async function visibleTexts(page,pattern){const out=[];const loc=page.locator('body *');for(let i=0;i<Math.min(await loc.count(),1500);i++){const e=loc.nth(i);try{if(await e.isVisible()){const t=norm(await e.innerText());if(t&&pattern.test(t))out.push(t.slice(0,180));}}catch{}}return [...new Set(out)].slice(0,30);}
-
-async function choosePlace(page,targetIndex){
- const controls=page.getByText('Select place',{exact:true});const visible=[];
- for(let i=0;i<await controls.count();i++){const e=controls.nth(i);try{if(await e.isVisible())visible.push(e);}catch{}}
- console.log(`Select place controls: ${await controls.count()}, visible: ${visible.length}`);if(visible.length<2)throw new Error('Expected two visible Hertz location controls');
- const control=visible[Math.min(targetIndex,visible.length-1)];await control.scrollIntoViewIfNeeded();await control.click();await page.waitForTimeout(500);
- const exact=page.getByText(/El Calafate\s*-\s*(Airport|Aeropuerto)/i);
- for(let i=0;i<await exact.count();i++){const e=exact.nth(i);try{if(await e.isVisible()){console.log(`Selecting existing location text: ${norm(await e.innerText())}`);await e.click();await page.waitForTimeout(300);return;}}catch{}}
- const ins=page.locator('input:visible');let typed=false,typedInput=null;const preferred=[];
- for(let i=0;i<await ins.count();i++){const x=ins.nth(i);try{const ph=await x.getAttribute('placeholder')||'',name=await x.getAttribute('name')||'',aria=await x.getAttribute('aria-label')||'',value=await x.inputValue().catch(()=>''),meta=`${ph} ${name} ${aria}`;if(/place|location|airport|search|pickup|dropoff/i.test(meta)&&!value)preferred.push(x);}catch{}}
- const candidates=[...preferred];for(let i=0;i<await ins.count();i++){const x=ins.nth(i);if(!candidates.includes(x))candidates.push(x);}
- for(const x of candidates){try{if(await x.inputValue().catch(()=>''))continue;await x.fill('El Calafate');typed=true;typedInput=x;console.log('Typed El Calafate into autocomplete input');break;}catch{}}
- await page.waitForTimeout(1500);
- const selectors=[page.getByText(/El Calafate\s*-\s*(Airport|Aeropuerto)/i),page.getByRole('option').filter({hasText:/El Calafate/i}),page.locator('[role="option"],li,button,[class*="option" i],[class*="suggest" i]').filter({hasText:/El Calafate/i})];
- for(const loc of selectors){for(let i=0;i<Math.min(await loc.count(),80);i++){const o=loc.nth(i);try{if(await o.isVisible()){const t=norm(await o.innerText());if(/el calafate/i.test(t)&&(/airport|aeropuerto|fte/i.test(t)||/el calafate\s*-\s*airport/i.test(t))){console.log(`Selecting autocomplete option: ${t}`);await o.click();await page.waitForTimeout(400);return;}}}catch{}}}
- if(typedInput){try{await typedInput.press('ArrowDown');await page.waitForTimeout(200);await typedInput.press('Enter');await page.waitForTimeout(500);console.log('Selected first autocomplete result with ArrowDown/Enter');return;}catch{}}
- const clues=await visibleTexts(page,/El Calafate|Aeropuerto|Airport|FTE/i);console.log(`Visible location clues: ${JSON.stringify(clues)}`);throw new Error('Could not select El Calafate Airport in Hertz Argentina location choices');
+const C={url:'https://www.hertz.com.ar/en',pickup:'2026-09-27',dropoff:'2026-10-04',time:'05:00 pm',state:'state.json'};
+const barkKey=process.env.BARK_KEY;
+const clean=s=>(s||'').replace(/\s+/g,' ').trim();
+const dateValue=s=>{const [y,m,d]=s.split('-');return `${d}/${m}/${y}`};
+function load(){try{return JSON.parse(fs.readFileSync(C.state,'utf8'))}catch{return{initialized:false,vehicles:[]}}}
+function save(v){fs.writeFileSync(C.state,JSON.stringify({initialized:true,checked_at:new Date().toISOString(),vehicles:v},null,2))}
+async function bark(t,b){if(!barkKey)return;const r=await fetch(`https://api.day.app/${encodeURIComponent(barkKey)}/${encodeURIComponent(t)}/${encodeURIComponent(b)}?group=hertz-car-monitor&sound=alarm&level=timeSensitive`);if(!r.ok)throw Error(`Bark HTTP ${r.status}`)}
+async function location(page){
+ const c=page.getByText('Select place',{exact:true});const n=await c.count();let x=null;for(let i=0;i<n;i++){if(await c.nth(i).isVisible().catch(()=>false)){x=c.nth(i);break}}
+ if(!x){console.log('Location control already resolved; continuing');return}
+ await x.click();await page.waitForTimeout(400);const ins=page.locator('input:visible');let input=null;
+ for(let i=0;i<await ins.count();i++){const q=ins.nth(i);const meta=`${await q.getAttribute('placeholder')||''} ${await q.getAttribute('name')||''} ${await q.getAttribute('aria-label')||''}`;if(/place|location|airport|search/i.test(meta)&&!(await q.inputValue().catch(()=>''))){input=q;break}}
+ if(!input)input=ins.filter({hasNotText:''}).first();if(!input)throw Error('No location input');await input.fill('El Calafate');await page.waitForTimeout(1200);
+ const opts=page.getByText(/El Calafate\s*(Aeropuerto|Airport)/i);for(let i=0;i<await opts.count();i++){const o=opts.nth(i);if(await o.isVisible().catch(()=>false)){console.log(`Location: ${clean(await o.innerText())}`);await o.click();await page.waitForTimeout(500);return}}
+ await input.press('ArrowDown');await input.press('Enter');await page.waitForTimeout(500)
 }
-
-async function fillInput(locator,value,label){await locator.waitFor({state:'visible'});await locator.fill(value);await locator.press('Tab').catch(()=>{});console.log(`Filled ${label}: ${value}`);}
-async function diagnostics(page){
- console.log('--- HERTZ ARGENTINA DIAGNOSTICS ---');console.log(`URL: ${page.url()}`);
- const fields=await page.locator('input,select,button,[role="combobox"],[role="textbox"]').evaluateAll(es=>{const clean=s=>(s||'').replace(/\s+/g,' ').trim();return es.slice(0,220).map((e,i)=>({i,tag:e.tagName,type:e.type||'',name:e.name||'',id:e.id||'',placeholder:e.getAttribute('placeholder')||'',aria:e.getAttribute('aria-label')||'',text:clean(e.innerText).slice(0,160),value:e.value||'',visible:!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length)}));});
- for(const f of fields)console.log(JSON.stringify(f));console.log(`BODY: ${norm(await page.locator('body').innerText().catch(()=>'' )).slice(0,5000)}`);
+async function form(page){
+ await location(page);
+ const dates=page.locator('input[name="pickup_and_return_date"]:visible');if(await dates.count()<2)throw Error(`Date inputs=${await dates.count()}`);
+ await dates.nth(0).fill(dateValue(C.pickup));await dates.nth(0).press('Tab');await dates.nth(1).fill(dateValue(C.dropoff));await dates.nth(1).press('Tab');
+ console.log(`Dates: ${await dates.nth(0).inputValue()} -> ${await dates.nth(1).inputValue()}`);
+ const inputs=page.locator('input:visible');const ts=[];for(let i=0;i<await inputs.count();i++){const q=inputs.nth(i),v=await q.inputValue().catch(()=>''),ph=await q.getAttribute('placeholder')||'';if(/time/i.test(ph)||/^\d\d:\d\d\s*(am|pm)$/i.test(v))ts.push(q)}
+ for(const q of ts.slice(0,2)){await q.fill(C.time);await q.press('Tab').catch(()=>{})}console.log(`Time candidates: ${ts.length}`)
 }
-async function setDatesAndTimes(page){
- const inputs=page.locator('input:visible'),dateInputs=[];for(let i=0;i<await inputs.count();i++){const x=inputs.nth(i);const ph=await x.getAttribute('placeholder')||'',name=await x.getAttribute('name')||'',aria=await x.getAttribute('aria-label')||'';if(/MM\/DD\/YYYY|date|pickup|dropoff|start|end/i.test(`${ph} ${name} ${aria}`))dateInputs.push(x);}
- if(dateInputs.length<2){console.log(`Date candidates found: ${dateInputs.length}`);throw new Error(`Expected two visible date inputs, found ${dateInputs.length}`);}
- await fillInput(dateInputs[0],fmtDate(CONFIG.pickupDate),'pick-up date');await fillInput(dateInputs[1],fmtDate(CONFIG.dropoffDate),'drop-off date');
- const times=page.getByText('hh:mm',{exact:true});if(await times.count()>=2){for(let i=0;i<2;i++){await times.nth(i).click();await page.waitForTimeout(300);const targets=page.getByText(/^(17:00|5:00 PM)$/,{exact:true});let ok=false;for(let j=0;j<await targets.count();j++){const t=targets.nth(j);try{if(await t.isVisible()){await t.click();ok=true;break;}}catch{}}console.log(`Time ${i}: ${ok?'17:00 selected':'17:00 option not exposed'}`);}}else console.log('Time controls not detected; continuing.');
-}
-async function extractVehicles(page){
- const selector='.car-card,.vehicle-card,[class*="vehicle-card" i],[class*="vehicleCard" i],[data-vehicle],[data-vehicletype],[class*="car-card" i]';
- return await page.evaluate((selector)=>{const clean=s=>(s||'').replace(/\s+/g,' ').trim();return [...document.querySelectorAll(selector)].map((card,i)=>{const text=clean(card.textContent),name=clean(card.querySelector('h1,h2,h3,h4,[class*="name" i],[class*="title" i]')?.textContent)||`Vehicle ${i+1}`,price=clean(card.querySelector('[class*="price" i],[class*="rate" i]')?.textContent),transmission=clean(card.querySelector('[class*="transmission" i],[class*="gear" i]')?.textContent),id=card.getAttribute('data-vehicle-id')||card.getAttribute('data-vehicleid')||card.getAttribute('data-vehicletype')||`${name}|${transmission}`;return{id,name,price,transmission,text:text.slice(0,700)};});},selector);
-}
+function apiRows(payload){const rows=[];const walk=x=>{if(!x||typeof x!=='object')return;if(Array.isArray(x)){for(const y of x.slice(0,1000))walk(y);return}const s=JSON.stringify(x);if(/vehicle|car/i.test(s)&&/automatic|manual|transmission|gear/i.test(s)&&/price|rate|amount|total/i.test(s))rows.push(x);for(const y of Object.values(x))if(y&&typeof y==='object')walk(y)};walk(payload);return rows.map((x,i)=>({id:`api-${i}`,name:x.name||x.vehicleName||x.model||x.vehicleType||x.description||'',transmission:x.transmission||x.transmissionType||x.gearbox||x.gear||'',price:x.total||x.totalRate||x.price||x.amount||x.rate||''})).filter(x=>x.name||x.transmission||x.price)}
+async function domRows(page){return page.evaluate(()=>{const c=s=>(s||'').replace(/\s+/g,' ').trim();const sel='[data-testid*="vehicle" i],[data-testid*="car" i],[class*="vehicle-card" i],[class*="vehicleCard" i],[class*="car-card" i],[class*="carCard" i],[data-vehicle],[data-vehicletype]';return [...document.querySelectorAll(sel)].map((e,i)=>{const t=c(e.textContent),name=c(e.querySelector('h1,h2,h3,h4,[class*="name" i],[class*="title" i]')?.textContent)||`Vehicle ${i+1}`;return{id:`dom-${i}`,name,transmission:/automatic/i.test(t)?'Automatic':/manual/i.test(t)?'Manual':'',price:c(e.querySelector('[class*="price" i],[class*="rate" i]')?.textContent),text:t.slice(0,700)}})})}
+async function diag(page){console.log(`URL ${page.url()}`);console.log(clean(await page.locator('body').innerText().catch(()=>'' )).slice(0,6000))}
 async function main(){
- console.log('========================================');console.log('HERTZ INVENTORY MONITOR');console.log('========================================');console.log(`${CONFIG.pickupDate} ${CONFIG.pickupTime} -> ${CONFIG.dropoffDate} ${CONFIG.dropoffTime}`);
- const state=loadState();console.log(`Previously known vehicles: ${state.vehicles?.length??0}`);const browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled']});let page=null;
- try{const context=await browser.newContext({userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',viewport:{width:1280,height:1000},locale:'en-US'});page=await context.newPage();page.setDefaultTimeout(15000);await page.goto(CONFIG.bookingUrl,{waitUntil:'domcontentloaded',timeout:30000});await page.waitForTimeout(5000);console.log(`Loaded URL: ${page.url()}`);
-  await choosePlace(page,0);await choosePlace(page,1);await setDatesAndTimes(page);await page.getByRole('button',{name:'Search',exact:true}).click();console.log('Clicked Search');await page.waitForLoadState('networkidle',{timeout:30000}).catch(()=>{});await page.waitForTimeout(7000);console.log(`Results URL: ${page.url()}`);
-  const body=norm(await page.locator('body').innerText().catch(()=>''));console.log(`Results page sample: ${body.slice(0,2500)}`);const vehicles=await extractVehicles(page);console.log(`Vehicle cards found: ${vehicles.length}`);
-  if(!vehicles.length){await page.screenshot({path:'hertz-debug.png',fullPage:true}).catch(()=>{});if(/no vehicles|no cars|no results|unavailable|sold out|não encontramos|no encontramos/i.test(body)){saveState([]);return;}throw new Error('No vehicle cards found and result page does not clearly report zero inventory.');}
-  const current=vehicles.map(v=>`${v.id}|${norm(v.name)}|${norm(v.transmission)}|${norm(v.price)}`).sort(),previous=new Set(state.vehicles||[]);if(!state.initialized){console.log('First successful check: saving baseline without Bark notification.');saveState(current);return;}const added=current.filter(v=>!previous.has(v));console.log(`Current: ${current.length}; added: ${added.length}`);if(added.length)await bark('🚨 Hertz 新增库存',`El Calafate Airport\n2026-09-27 17:00 → 2026-10-04 17:00\n\n${added.slice(0,10).map(v=>`🚗 ${v}`).join('\n')}`);saveState(current);
- }catch(e){console.error(e?.stack||e);if(page){try{await diagnostics(page);await page.screenshot({path:'hertz-debug.png',fullPage:true});}catch(de){console.error(`Diagnostics also failed: ${de?.stack||de}`);}}process.exitCode=1;}finally{await browser.close();}}
+ console.log('========================================\nHERTZ INVENTORY MONITOR\n========================================');console.log(`${C.pickup} 17:00 -> ${C.dropoff} 17:00`);const old=load();console.log(`Previously known vehicles: ${old.vehicles?.length||0}`);
+ const browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});const page=await browser.newPage({viewport:{width:1280,height:1000},locale:'en-US'});page.setDefaultTimeout(15000);const responses=[];
+ page.on('response',async r=>{if(!/hertz\.com\.ar/i.test(r.url())||!/(vehicle|itinerary|availability|rate|search)/i.test(r.url()))return;try{const ct=r.headers()['content-type']||'';if(ct.includes('json'))responses.push({url:r.url(),status:r.status(),json:await r.json()})}catch{}});
+ try{await page.goto(C.url,{waitUntil:'domcontentloaded',timeout:30000});await page.waitForTimeout(5000);console.log(`Loaded ${page.url()}`);await location(page);const body1=clean(await page.locator('body').innerText());console.log(/Pickup place\s+El Calafate\s+(Aeropuerto|Airport)/i.test(body1)?'Pickup location OK':'Pickup location not confirmed');console.log(/Return place\s+El Calafate\s+(Aeropuerto|Airport)/i.test(body1)?'Return location OK':'Return location not confirmed');await form(page);await page.getByRole('button',{name:'Search',exact:true}).click();console.log('Clicked Search');await page.waitForLoadState('networkidle',{timeout:30000}).catch(()=>{});await page.waitForTimeout(9000);console.log(`Results ${page.url()}`);console.log(`Captured JSON responses: ${responses.length}`);fs.writeFileSync('hertz-api-results.json',JSON.stringify(responses,null,2));const api=responses.flatMap(r=>apiRows(r.json));const dom=await domRows(page);console.log(`API vehicle candidates: ${api.length}; DOM cards: ${dom.length}`);const vehicles=api.length?api:dom;const body=clean(await page.locator('body').innerText().catch(()=>''));console.log(`Results sample: ${body.slice(0,2500)}`);if(!vehicles.length){await page.screenshot({path:'hertz-debug.png',fullPage:true}).catch(()=>{});if(/no vehicles|no cars|no results|unavailable|sold out|no disponible|no encontramos/i.test(body)){save([]);return}throw Error('No vehicle data found')};const current=vehicles.map(v=>`${v.id}|${clean(v.name)}|${clean(v.transmission)}|${clean(String(v.price))}`).sort();if(!old.initialized){console.log('First successful check: baseline saved');save(current);return}const prev=new Set(old.vehicles||[]),added=current.filter(v=>!prev.has(v));console.log(`Current=${current.length}; added=${added.length}`);if(added.length)await bark('🚨 Hertz 新增库存',`El Calafate Airport\n2026-09-27 17:00 → 2026-10-04 17:00\n\n${added.slice(0,10).map(x=>`🚗 ${x}`).join('\n')}`);save(current)}catch(e){console.error(e?.stack||e);await diag(page).catch(()=>{});await page.screenshot({path:'hertz-debug.png',fullPage:true}).catch(()=>{});process.exitCode=1}finally{await browser.close()}}
 main();

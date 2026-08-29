@@ -31,6 +31,25 @@ jobs:
         run: npm install
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
+      - name: Harden Hertz search click
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const p = 'monitor.mjs';
+          let s = fs.readFileSync(p, 'utf8');
+          const cleanOld = "const clean=s=>String(s??'').replace(/\\s+/g,' ').trim();";
+          const cleanNew = "const clean=s=>String(s??'').replace(/\\s+/g,' ').trim();";
+          if (!s.includes(cleanOld)) throw new Error('Expected clean helper not found');
+          const start = s.indexOf("const searchText=page.getByText('Search',{exact:true});");
+          const endMarker = "console.log('Clicked Search');";
+          const end = start >= 0 ? s.indexOf(endMarker, start) : -1;
+          if (start < 0 || end < 0) throw new Error('Expected search block not found');
+          const replacement = `const searchText=page.getByText('Search',{exact:true});\nlet searchClicked=false;\nfor(let i=0;i<await searchText.count();i++){const el=searchText.nth(i);if(await el.isVisible().catch(()=>false)){console.log('Search text candidate:',await el.evaluate(e=>e.outerHTML.slice(0,1200)).catch(()=>'?'));const parent=el.locator('xpath=ancestor::button[1]');if(await parent.count()&&await parent.first().isVisible().catch(()=>false)){await parent.first().click({force:true}).catch(()=>{});searchClicked=true}else{await el.click({force:true}).catch(()=>{});searchClicked=true}break}}\nif(!searchClicked){const controls=page.locator('button:visible,[role="button"]:visible,a:visible,input[type="submit"]:visible,input[type="button"]:visible');for(let i=0;i<await controls.count();i++){const el=controls.nth(i);const txt=clean((await el.innerText().catch(()=>''))+' '+(await el.getAttribute('value').catch(()=>''))+' '+(await el.getAttribute('aria-label').catch(()=>'')));if(/^Search$/i.test(txt)){console.log('Search control candidate:',await el.evaluate(e=>e.outerHTML.slice(0,1200)).catch(()=>'?'));await el.click({force:true}).catch(()=>{});searchClicked=true;break}}}\nif(!searchClicked)throw Error('Could not find visible Search control');\nconsole.log('Clicked Search');\nawait page.waitForTimeout(1500);\nif(!/\\/selection(?:[/?]|$)/i.test(page.url())){console.log('Search did not navigate; retrying submit button');const submit=page.locator('button[type="submit"]:visible').filter({hasText:/Search/i}).first();if(await submit.count()){await submit.click({force:true}).catch(()=>{});await page.waitForTimeout(2500)}}\nif(!/\\/selection(?:[/?]|$)/i.test(page.url()))console.log('Search URL after retry:',page.url());`;
+          s = s.slice(0, start) + replacement + s.slice(end + endMarker.length);
+          fs.writeFileSync(p, s);
+          console.log('Applied robust Hertz Search click/retry');
+          NODE
       - name: Check Hertz inventory
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
